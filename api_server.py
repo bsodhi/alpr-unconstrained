@@ -13,7 +13,6 @@ import sys
 import cv2
 import numpy as np
 import traceback
-import sqlite3
 import keras
 
 import darknet.python.darknet as dn
@@ -28,18 +27,7 @@ from src.keras_utils import load_model, detect_lp
 import argparse
 
 # Should be initialized right after server startup
-DB_FILE = None
 WPOD_PATH = os.path.join(os.getcwd(), "data/lp-detector/wpod-net_update1.h5")
-
-
-def _update_frame(frame_file, status, detected_text):
-    with sqlite3.connect(DB_FILE) as conn:
-        c = conn.cursor()
-        c.execute(
-            """UPDATE frames SET status=?, detected_text=?
-        WHERE frame_file=?""", (status, detected_text, frame_file))
-        conn.commit()
-        return conn.total_changes
 
 
 def lp_detect(task_dir):
@@ -125,14 +113,8 @@ def ocr(task_dir, file_name_pattern="box_*.jpg"):
                     "Error occurred when performing OCR on {}. Continuing to next image."
                     .format(img_path))
 
-        # Update the task record in DB
         text = output.getvalue()
         output.close()
-        ff = os.path.join(task_dir, "input_frame.jpg")
-        if _update_frame(ff, "FIN", text) < 1:
-            logging.error(
-                "Failed to update the task status in DB for frame file {}".
-                format(ff))
     except:
         logging.exception("Fatal error when performing OCR.")
     logging.info("Found text {}".format(text))
@@ -186,7 +168,6 @@ def make_app():
 if __name__ == "__main__":
     logging.basicConfig(filename='server.log', level=logging.INFO)
     parser = argparse.ArgumentParser()
-    parser.add_argument("db_file", type=str, help="DB file file path.")
     parser.add_argument("-p",
                         "--port",
                         type=int,
@@ -200,11 +181,10 @@ if __name__ == "__main__":
                         help="WPOD model path.")
 
     args = parser.parse_args()
-    DB_FILE = args.db_file
     if args.wpod_path:
         WPOD_PATH = args.wpod_path
     
-    print("Using DB file {0}, and WPOD model from {1}".format(DB_FILE, WPOD_PATH))
+    print("Using WPOD model from {0}".format(WPOD_PATH))
 
     app = make_app()
     app.listen(args.port)
