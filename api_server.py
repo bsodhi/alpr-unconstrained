@@ -57,7 +57,7 @@ def lp_detect(task_dir):
             Ilp = LlpImgs[0]
             Ilp = cv2.cvtColor(Ilp, cv2.COLOR_BGR2GRAY)
             Ilp = cv2.cvtColor(Ilp, cv2.COLOR_GRAY2BGR)
-            out_file = "{0}/lp_{1}.jpg".format(task_dir, bname)
+            out_file = os.path.join(task_dir, "lp_{0}.jpg".format(bname))
             cv2.imwrite(out_file, Ilp * 255.)
             logging.info(
                 "Licence plate written to {0}. Starting OCR.".format(out_file))
@@ -128,6 +128,13 @@ def ocr(task_dir, file_name_pattern="box_*.jpg"):
 Q = Queue(maxsize=1000)
 
 
+def _send_callback(cb_url, status, file_path, text):
+    data = {"status": status, "file_path": file_path, "text": text}
+    jr = requests.post(cb_url, json=data, verify=False).json()
+    logging.info("Sent callback: {0}. Remote response: {1}".format(data, jr))
+    return jr
+
+
 @gen.coroutine
 def process_request():
     while True:
@@ -136,8 +143,8 @@ def process_request():
             tt = json_args["task_type"].lower()
             cb_url = json_args["callback_url"]
             td = json_args["task_dir"]
-            logging.info("Processing request for \
-                task_type={0}, task_dir={1}".format(tt, td))
+            file_path = os.path.join(td, "input_frame.jpg")
+            logging.info("Dequeued request: "+str(json_args))
 
             if tt == "ocr":
                 text = ocr(td)
@@ -146,22 +153,23 @@ def process_request():
             else:
                 raise Exception("Unsupported task type: {0}".format(tt))
 
-            payload = {"status": "OK", "body": text}
-            r = requests.post(cb_url, data=payload)
+            jr = _send_callback(cb_url, "OK", file_path, text)
             fut = Future()
-            fut.set_result(r.text)
-
+            fut.set_result(jr["body"])
             yield fut
+
+            if jr and jr["status"] == "OK":
+                Q.task_done()
+            else:
+                logging.error("Callback failed. Remote reply: "+str(jr))
+
         except Exception as ex:
             logging.exception("Error occurred when processing request.")
             try:
-                payload = {"status": "ERROR",
-                           "body": "Failed to process request. "+str(ex)}
-                requests.post(cb_url, data=payload)
+                _send_callback(cb_url, "ERROR", file_path,
+                               "Failed to process request. "+str(ex))
             except Exception as ex2:
                 logging.exception("Could not callback to {}".format(cb_url))
-        finally:
-            Q.task_done()
 
 
 class ApiHandler(RequestHandler):
@@ -189,12 +197,11 @@ class ApiHandler(RequestHandler):
             tt = self.json_args["task_type"].lower()
             cb_url = self.json_args["callback_url"]
             td = self.json_args["task_dir"]
-            logging.info("Processing request for \
-                task_type={0}, task_dir={1}".format(tt, td))
+            logging.info("Received request: "+str(self.json_args))
 
             yield Q.put(self.json_args)
             self.write({"status": "OK", "body": "Processing"})
-            logging.info("Request processed.")
+            logging.info("Request queued for processing.")
         except Exception as ex:
             logging.exception("Error occurred when handling request.")
             self.write(
