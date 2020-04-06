@@ -1,9 +1,12 @@
 import os
-import tornado.ioloop
 import time
 import json
 import logging
 import cStringIO
+import requests
+
+from tornado.ioloop import IOLoop
+from tornado.queues import Queue
 from tornado.web import RequestHandler
 from tornado.web import Application
 from tornado import gen
@@ -122,6 +125,45 @@ def ocr(task_dir, file_name_pattern="box_*.jpg"):
     return text
 
 
+Q = Queue(maxsize=1000)
+
+
+@gen.coroutine
+def process_request():
+    while True:
+        json_args = yield Q.get()
+        try:
+            tt = json_args["task_type"].lower()
+            cb_url = json_args["callback_url"]
+            td = json_args["task_dir"]
+            logging.info("Processing request for \
+                task_type={0}, task_dir={1}".format(tt, td))
+
+            if tt == "ocr":
+                text = ocr(td)
+            elif tt == "alpr":
+                text = lp_detect(td)
+            else:
+                raise Exception("Unsupported task type: {0}".format(tt))
+
+            payload = {"status": "OK", "body": text}
+            r = requests.post(cb_url, data=payload)
+            fut = Future()
+            fut.set_result(r.text)
+
+            yield fut
+        except Exception as ex:
+            logging.exception("Error occurred when processing request.")
+            try:
+                payload = {"status": "ERROR",
+                           "body": "Failed to process request. "+str(ex)}
+                requests.post(cb_url, data=payload)
+            except Exception as ex2:
+                logging.exception("Could not callback to {}".format(cb_url))
+        finally:
+            Q.task_done()
+
+
 class ApiHandler(RequestHandler):
     def prepare(self):
         if self.request.headers.get("Content-Type",
@@ -133,28 +175,31 @@ class ApiHandler(RequestHandler):
     def validate_req(self):
         if not self.json_args:
             raise Exception("Only JSON requests supported.")
-        if "task_dir" not in self.json_args or "task_type" not in self.json_args:
+        if "task_dir" not in self.json_args or \
+            "task_type" not in self.json_args or \
+                "callback_url" not in self.json_args:
             raise Exception(
-                "Expected JSON payload with 'task_dir' and 'task_type'")
+                "Expected JSON payload with 'task_dir', \
+                'task_type' and 'callback_url'")
 
     @gen.coroutine
     def post(self):
         self.validate_req()
         try:
             tt = self.json_args["task_type"].lower()
-            if tt == "ocr":
-                text = ocr(self.json_args["task_dir"])
-            elif tt == "alpr":
-                text = lp_detect(self.json_args["task_dir"])
-            else:
-                raise Exception("Unsupported task type: {}".format(tt))
-            fut = Future()
-            fut.set_result(text)
-            xx = yield fut
-            self.write(xx if xx else "None")
+            cb_url = self.json_args["callback_url"]
+            td = self.json_args["task_dir"]
+            logging.info("Processing request for \
+                task_type={0}, task_dir={1}".format(tt, td))
+
+            yield Q.put(self.json_args)
+            self.write({"status": "OK", "body": "Processing"})
+            logging.info("Request processed.")
         except Exception as ex:
             logging.exception("Error occurred when handling request.")
-            self.write("Failed to handle request. " + str(ex))
+            self.write(
+                {"status": "ERROR",
+                 "body": "Failed to handle request. " + str(ex)})
 
     get = post
 
@@ -167,9 +212,9 @@ def make_app():
 
 if __name__ == "__main__":
     logging.basicConfig(filename='server.log',
-                    level=logging.INFO, 
-                    format='%(asctime)s %(levelname)s:: %(message)s',
-                    datefmt='%d-%m-%Y@%I:%M:%S %p')
+                        level=logging.INFO,
+                        format='%(asctime)s %(levelname)s:: %(message)s',
+                        datefmt='%d-%m-%Y@%I:%M:%S %p')
 
     parser = argparse.ArgumentParser()
     parser.add_argument("-p",
@@ -187,10 +232,15 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if args.wpod_path:
         WPOD_PATH = args.wpod_path
-    
+
     print("Using WPOD model from {0}".format(WPOD_PATH))
 
     app = make_app()
     app.listen(args.port)
-    print("Started server at port {0}".format(args.port))
-    tornado.ioloop.IOLoop.current().start()
+
+    # Must start this one first
+    print("Starting request processor couroutine on IOLoop.")
+    IOLoop.current().spawn_callback(process_request)
+
+    print("Starting server at port {0}".format(args.port))
+    IOLoop.current().start()
