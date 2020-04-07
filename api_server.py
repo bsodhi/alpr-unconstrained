@@ -128,8 +128,9 @@ def ocr(task_dir, file_name_pattern="box_*.jpg"):
 Q = Queue(maxsize=1000)
 
 
-def _send_callback(cb_url, status, file_path, text):
-    data = {"status": status, "file_path": file_path, "text": text}
+def _send_callback(cb_url, task_type, status, file_path, text):
+    data = {"task_type": task_type, "status": status,
+            "file_path": file_path, "text": text}
     jr = requests.post(cb_url, json=data, verify=False).json()
     logging.info("Sent callback: {0}. Remote response: {1}".format(data, jr))
     return jr
@@ -140,20 +141,20 @@ def process_request():
     while True:
         json_args = yield Q.get()
         try:
-            tt = json_args["task_type"].lower()
+            tt = json_args["task_type"].upper()
             cb_url = json_args["callback_url"]
             td = json_args["task_dir"]
             file_path = os.path.join(td, "input_frame.jpg")
             logging.info("Dequeued request: "+str(json_args))
 
-            if tt == "ocr":
+            if tt == "OCR":
                 text = ocr(td)
-            elif tt == "alpr":
+            elif tt == "ALPR":
                 text = lp_detect(td)
             else:
                 raise Exception("Unsupported task type: {0}".format(tt))
 
-            jr = _send_callback(cb_url, "OK", file_path, text)
+            jr = _send_callback(cb_url, tt, "OK", file_path, text)
             fut = Future()
             fut.set_result(jr["body"])
             yield fut
@@ -166,7 +167,7 @@ def process_request():
         except Exception as ex:
             logging.exception("Error occurred when processing request.")
             try:
-                _send_callback(cb_url, "ERROR", file_path,
+                _send_callback(cb_url, tt, "ERROR", file_path,
                                "Failed to process request. "+str(ex))
             except Exception as ex2:
                 logging.exception("Could not callback to {}".format(cb_url))
@@ -174,8 +175,8 @@ def process_request():
 
 class ApiHandler(RequestHandler):
     def prepare(self):
-        if self.request.headers.get("Content-Type",
-                                    "").startswith("application/json"):
+        if self.request.headers.get("Content-Type", "").\
+            startswith("application/json"):
             self.json_args = json.loads(self.request.body)
         else:
             self.json_args = None
