@@ -251,4 +251,5 @@ if __name__ == "__main__":
     IOLoop.current().spawn_callback(process_request)
 
     print("Starting server at port {0}".format(args.port))
+    sys.stdout.flush()
     IOLoop.current().start()
