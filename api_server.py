@@ -131,8 +131,9 @@ Q = Queue(maxsize=1000)
 def _send_callback(cb_url, task_type, status, file_path, text):
     data = {"task_type": task_type, "status": status,
             "file_path": file_path, "text": text}
+    logging.info("Making callback: {0}. URL: {1}".format(data, cb_url))
     jr = requests.post(cb_url, json=data, verify=False).json()
-    logging.info("Sent callback: {0}. Remote response: {1}".format(data, jr))
+    logging.info("Remote response: {0}".format(jr))
     return jr
 
 
